@@ -26,7 +26,7 @@ IPA_HOST=${6:-}
 IPA_PRIVATE_IP=${7:-}
 ECS_PUBLIC_DNS=${8:-}
 ECS_PRIVATE_IP=${9:-}
-export NAMESPACE DOCKER_DEVICE IPA_HOST
+export NAMESPACE DOCKER_DEVICE IPA_HOST ECS_PUBLIC_DNS
 
 if [[ ! -z ${CLUSTER_ID:-} ]]; then
   PEER_CLUSTER_ID=$(( (CLUSTER_ID/2)*2 + (CLUSTER_ID+1)%2 ))
@@ -438,7 +438,8 @@ fi
 
 log_status "Adding users"
 # After Kerberos installation so that principals are also created correctly, if needed
-add_user workshop /home/workshop cdp-users
+# Promote workshop user to admin for ECS access
+add_user workshop /home/workshop cdp-admins
 add_user admin /home/admin cdp-admins,shadow,supergroup
 add_user alice /home/alice cdp-users
 add_user bob /home/bob cdp-users
