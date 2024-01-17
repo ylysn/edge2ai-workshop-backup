@@ -160,7 +160,7 @@ add_user bob /home/bob $USERS_GROUP
 log_status "Adding required roles"
 # Add this role to avoid racing conditions between multiple CMs coming up at the same time
 ipa role-add cmadminrole
-ipa role-add-privilege cmadminrole --privileges="Service Administrators"
+ipa role-add-privilege cmadminrole --privileges="Service Administrators" --privileges="Host Administrators"
 
 log_status "Starting the IPA service"
 systemctl restart krb5kdc

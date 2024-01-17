@@ -1936,7 +1936,17 @@ EOF
   log_status "CML Workspace URL ${CML_BASE_URL}"
 
   # Patch gen_credentials_ipa.sh for IPA support to ECS
-  sed -i.bak '/HOST=.*$/a [[ ! "$HOST" =~ \. ]] && HOST="${HOST}.svc.cluster.local"' /opt/cloudera/cm/bin/gen_credentials_ipa.sh
+  local ipa_patch_file=/tmp/ipa_patch_file.$$
+  cat > $ipa_patch_file <<EOF
+  # ipa host-add patch for k8s
+  if [[ \$HOST =~ \. ]]; then
+    ipa host-add \$HOST  --force --no-reverse
+  else
+    ipa host-add \$HOST.svc.cluster.local  --force --no-reverse
+  fi
+EOF
+  local search_string='  ipa host-add $HOST --force --no-reverse'
+  sed -i.bak -e '/'"$search_string"'/r '"$ipa_patch_file"'' -e '/'"$search_string"'/d' /opt/cloudera/cm/bin/gen_credentials_ipa.sh
   # Clean up
   rm -f $COOKIE_FILE $LDAP_JSON $VALIDATE_JSON $ECS_ENV_JSON $ECS_CML_JSON || true
 
