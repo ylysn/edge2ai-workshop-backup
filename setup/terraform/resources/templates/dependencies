@@ -18,3 +18,4 @@ SPARK_ON_YARN  requires YARN
 SMM            requires KAFKA
 SRM            requires KAFKA
 ZEPPELIN       requires YARN,HDFS,SPARK_ON_YARN
+ECS            requires HIVE,RANGER,ATLAS,HDFS,OZONE

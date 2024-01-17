@@ -24,7 +24,8 @@ if [[ $ACTION == "install-prereqs" ]]; then
   NAMESPACE=${5:-}
   IPA_HOST=${6:-}
   IPA_PRIVATE_IP=${7:-}
-  export IPA_HOST
+  HAS_ECS=1
+  export IPA_HOST HAS_ECS
 
   get_public_ip
   load_stack $NAMESPACE
