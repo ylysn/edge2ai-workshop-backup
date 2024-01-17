@@ -981,6 +981,12 @@ function nth_instances() {
         private_ip=$(get_resource_attr azurerm_network_interface nic_${instance_type} private_ip_address $index)
         get_resource_attr azurerm_virtual_machine ${instance_type} ".index name vm_size id .type .name .index" $index | format "%s %s $prefix.$public_ip.nip.io $public_ip $private_ip %s %s Yes %s.%s[%s]"
       done
+    elif [[ ${TF_VAR_cloud_provider:-} == "gcp" ]]; then
+      for index in $(get_resource_attr google_compute_instance ${instance_type} .index ${instance_index:-}); do
+        public_ip=$(get_resource_attr google_compute_address ${instance_type}-public-ip address $index)
+        private_ip=$(get_resource_attr google_compute_instance  ${instance_type} "network_interface[0].network_ip" $index)
+        get_resource_attr google_compute_instance ${instance_type} ".index name machine_type name .type .name .index" $index | format "%s %s $prefix.$public_ip.nip.io $public_ip $private_ip %s %s Yes %s.%s[%s]"
+      done
     fi
   fi
 }
@@ -1005,6 +1011,10 @@ function ipa_instance() {
       public_ip=$(get_resource_attr azurerm_public_ip ip_ipa ip_address)
       private_ip=$(get_resource_attr azurerm_network_interface nic_ipa private_ip_address)
       get_resource_attr azurerm_virtual_machine ipa "name vm_size id .type .name" | format "%s cdp.$public_ip.nip.io $public_ip $private_ip %s %s Yes %s.%s"
+    elif [[ ${TF_VAR_cloud_provider:-} == "gcp" ]]; then
+      public_ip=$(get_resource_attr google_compute_address ipa-public-ip address)
+      private_ip=$(get_resource_attr google_compute_instance ipa "network_interface[0].network_ip")
+      get_resource_attr google_compute_instance ipa "name machine_type name .type .name" | format "%s cdp.$public_ip.nip.io $public_ip $private_ip %s %s Yes %s.%s"
     fi
   fi
 }
@@ -1019,6 +1029,10 @@ function web_instance() {
       public_ip=$(get_resource_attr azurerm_public_ip ip_web ip_address)
       private_ip=$(get_resource_attr azurerm_network_interface nic_web private_ip_address)
       get_resource_attr azurerm_virtual_machine web "name vm_size id .type .name" | format "%s cdp.$public_ip.nip.io $public_ip $private_ip %s %s Yes %s.%s"
+    elif [[ ${TF_VAR_cloud_provider:-} == "gcp" ]]; then
+      public_ip=$(get_resource_attr google_compute_address web-public-ip address)
+      private_ip=$(get_resource_attr google_compute_instance web "network_interface[0].network_ip")
+      get_resource_attr google_compute_instance web "name machine_type name .type .name" | format "%s cdp.$public_ip.nip.io $public_ip $private_ip %s %s Yes %s.%s"
     fi
   fi
 }
