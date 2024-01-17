@@ -154,6 +154,8 @@ EOF
   done
   set -e
   sleep 10
+  # Enable python38
+  enable_py3
   kubectl get configmap -n kube-system rke2-coredns-rke2-coredns -o yaml | python $SCRIPT_FILE > $YAML_FILE
   kubectl apply -f $YAML_FILE
 fi
