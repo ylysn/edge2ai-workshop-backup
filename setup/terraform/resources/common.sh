@@ -727,7 +727,17 @@ function create_certs() {
   if [[ ! -z ${LOCAL_HOSTNAME:-} ]]; then
     ALT_NAMES="DNS:${LOCAL_HOSTNAME},"
   fi
-  export ALT_NAMES="${ALT_NAMES}DNS:$(hostname -f),DNS:*.${public_ip}.nip.io,DNS:*.cdsw.${public_ip}.nip.io"
+  
+  ALT_NAMES="${ALT_NAMES}DNS:$(hostname -f),DNS:*.${public_ip}.nip.io"
+
+  if [[ ${HAS_CDSW:-0} == 1 ]]; then
+    ALT_NAMES="${ALT_NAMES},DNS:*.cdsw.${public_ip}.nip.io"
+  fi
+  if [[ ${HAS_ECS:-0} == 1 ]] && [[ $PUBLIC_DNS == ecs* ]]; then
+    ALT_NAMES="${ALT_NAMES},DNS:*.apps.${PUBLIC_DNS},DNS:edge2ai.apps.${PUBLIC_DNS},DNS:*.edge2ai.apps.${PUBLIC_DNS}"
+  fi
+  export ALT_NAMES
+
   openssl req\
     -new\
     -key ${KEY_PEM} \
@@ -770,7 +780,14 @@ EOF
       ipa host-add-principal $(hostname -f) "host/${LOCAL_HOSTNAME}"
     fi
     ipa host-add-principal $(hostname -f) "host/*.${public_ip}.nip.io"
-    ipa host-add-principal $(hostname -f) "host/*.cdsw.${public_ip}.nip.io"
+    if [[ ${HAS_CDSW:-0} == 1 ]]; then
+      ipa host-add-principal $(hostname -f) "host/*.cdsw.${public_ip}.nip.io"
+    fi
+    if [[ ${HAS_ECS:-0} == 1 ]] && [[ $PUBLIC_DNS == ecs* ]]; then
+      ipa host-add-principal $(hostname -f) "host/*.apps.${PUBLIC_DNS}"
+      ipa host-add-principal $(hostname -f) "host/edge2ai.apps.${PUBLIC_DNS}"
+      ipa host-add-principal $(hostname -f) "host/*.edge2ai.apps.${PUBLIC_DNS}"
+    fi
     ipa cert-request ${CSR_PEM} --principal=host/$(hostname -f)
     echo -e "-----BEGIN CERTIFICATE-----\n$(ipa host-find $(hostname -f) | grep Certificate: | tail -1 | awk '{print $NF}')\n-----END CERTIFICATE-----" | openssl x509 > ${HOST_PEM}
 
@@ -1016,7 +1033,7 @@ function get_service_urls() {
   load_stack $NAMESPACE $BASE_DIR/resources validate_only exclude_signed
   CLUSTER_HOST=dummy PRIVATE_IP=dummy PUBLIC_DNS=dummy DOCKER_DEVICE=dummy CDSW_DOMAIN=dummy \
   IPA_HOST="$([[ $USE_IPA == "yes" ]] && echo dummy || echo "")" \
-  CLUSTER_ID=dummy PEER_CLUSTER_ID=dummy PEER_PUBLIC_DNS=dummy \
+  CLUSTER_ID=dummy PEER_CLUSTER_ID=dummy PEER_PUBLIC_DNS=dummy ECS_PUBLIC_DNS=dummy \
   python $BASE_DIR/resources/cm_template.py --cdh-major-version $CDH_MAJOR_VERSION $CM_SERVICES > $tmp_template_file
 
   local cm_port=$([[ $ENABLE_TLS == "yes" ]] && echo 7183 || echo 7180)
@@ -1700,6 +1717,22 @@ function install_ecs() {
             "name": "lsoDataPath",
             "value": "/ecs/local-storage",
             "sensitive": false
+          },
+          {
+            "name": "target_redundancy",
+            "value": 1
+          },
+          {
+            "name": "longhorn_replication",
+            "value": 1
+          },
+          {
+            "name": "ssl_certificate",
+            "value": "${SEC_BASE}/ecs/host.pem"
+          },
+          {
+            "name": "ssl_private_key",
+            "value": "${SEC_BASE}/ecs/unencrypted-key.pem"
           }
         ]
       },
@@ -1728,6 +1761,14 @@ function install_ecs() {
   ]
 }
 EOF
+  
+  log_status "Prepare CM host for ECS certificates"
+  mkdir -p ${SEC_BASE}/ecs
+  ssh -tt -o StrictHostKeyChecking=no -i /home/${SSH_USER}/.ssh/${NAMESPACE}.pem ${SSH_USER}@${ECS_PRIVATE_IP} "sudo cp ${UNENCRYTED_KEY_PEM} ${HOST_PEM} /home/${SSH_USER}/.; sudo chown ${SSH_USER}:${SSH_USER} /home/${SSH_USER}/unencrypted-key.pem /home/${SSH_USER}/host.pem"
+  scp -o StrictHostKeyChecking=no -i /home/${SSH_USER}/.ssh/${NAMESPACE}.pem ${SSH_USER}@${ECS_PRIVATE_IP}:/home/${SSH_USER}/unencrypted-key.pem ${SEC_BASE}/ecs/unencrypted-key.pem 
+  scp -o StrictHostKeyChecking=no -i /home/${SSH_USER}/.ssh/${NAMESPACE}.pem ${SSH_USER}@${ECS_PRIVATE_IP}:/home/${SSH_USER}/host.pem ${SEC_BASE}/ecs/host.pem
+  chown -R cloudera-scm:cloudera-scm ${SEC_BASE}/ecs
+
   "${CURL[@]}" -X POST \
     "https://${CLUSTER_HOST}:7183/api/v51/clusters/${ECS_CLUSTER_NAME}/services" \
     -d @$svc_json_file
@@ -1737,7 +1778,7 @@ EOF
   cat > $ecs_json_file <<EOF
 {
   "remoteRepoUrl": "${ECS_REPO}",
-  "valuesYaml": "ContainerInfo:\n  Mode: public\n  CopyDocker: false\nDatabase:\n  Mode: embedded\n  EmbeddedDbStorage: 200\nServices:\n  thunderheadenvironment:\n    Config:\n      database:\n        name: db-env\n  mlxcontrolplaneapp:\n    Config:\n      database:\n        name: db-mlx\n  dwx:\n    Config:\n      database:\n        name: db-dwx\n  cpxliftie:\n    Config:\n      database:\n        name: db-liftie\n  dex:\n    Config:\n      database:\n        name: db-dex\n  resourcepoolmanager:\n    Config:\n      database:\n        name: db-resourcepoolmanager\n  cdpcadence:\n    Config:\n      database:\n        name: db-cadence\n  cdpcadencevisibility:\n    Config:\n      database:\n        name: db-cadence-visibility\n  clusteraccessmanager:\n    Config:\n      database:\n        name: db-clusteraccessmanager\n  monitoringapp:\n    Config:\n      database:\n        name: db-alerts\n  thunderheadusermanagementprivate:\n    Config:\n      database:\n        name: db-ums\n  classicclusters:\n    Config:\n      database:\n        name: cm-registration\n  clusterproxy:\n    Config:\n      database:\n        name: cluster-proxy\nVault:\n  Mode: embedded\n",
+  "valuesYaml": "ContainerInfo:\n  Mode: public\n  CopyDocker: false\nDatabase:\n  Mode: embedded\n  EmbeddedDbStorage: 20\nServices:\n  thunderheadenvironment:\n    Config:\n      database:\n        name: db-env\n  mlxcontrolplaneapp:\n    Config:\n      database:\n        name: db-mlx\n  dwx:\n    Config:\n      database:\n        name: db-dwx\n  cpxliftie:\n    Config:\n      database:\n        name: db-liftie\n  dex:\n    Config:\n      database:\n        name: db-dex\n  resourcepoolmanager:\n    Config:\n      database:\n        name: db-resourcepoolmanager\n  cdpcadence:\n    Config:\n      database:\n        name: db-cadence\n  cdpcadencevisibility:\n    Config:\n      database:\n        name: db-cadence-visibility\n  clusteraccessmanager:\n    Config:\n      database:\n        name: db-clusteraccessmanager\n  monitoringapp:\n    Config:\n      database:\n        name: db-alerts\n  thunderheadusermanagementprivate:\n    Config:\n      database:\n        name: db-ums\n  classicclusters:\n    Config:\n      database:\n        name: cm-registration\n  clusterproxy:\n    Config:\n      database:\n        name: cluster-proxy\nVault:\n  Mode: embedded\n  EmbeddedStorage: 2\n",
   "containerizedClusterName": "${ECS_CLUSTER_NAME}",
   "experienceClusterName": "${ECS_CLUSTER_NAME}",
   "datalakeClusterName": "OneNodeCluster"
@@ -1754,8 +1795,152 @@ EOF
   while true; do
     [[ $(curl -s -k -L -u admin:"${THE_PWD}" "$(get_cm_base_url)/api/v19/commands/$job_id" | jq -r '.active') == "false" ]] && break
     echo "Waiting for ECS setup to finish"
-    sleep 1
+    # ECS setup takes up to 15 minutes, sleep for 30 seconds
+    sleep 30
   done
+  echo "ECS Post-Install configuration"
+
+  log_status "Configure LDAP/PAM Groups on CDP-BASE"
+  "${CURL[@]}" -X POST \
+    "https://${CLUSTER_HOST}:7183/api/v30/externalUserMappings" \
+    -d '{"items":[{"name":"cdp-admins","type":"LDAP","authRoles":[{"name":"ROLE_ADMIN"}]},{"name":"cdp-users","type":"LDAP","authRoles":[{"name":"ROLE_CLUSTER_ADMIN"}]}]}'
+
+  local ECS_BASE_URL="https://console-cdp.apps.$ECS_PUBLIC_DNS"
+  local ROOT_CA=/opt/cloudera/security/x509/truststore.pem
+  local COOKIE_FILE=${BASE_DIR}/cookie.txt.$$
+  local LDAP_JSON=${BASE_DIR}/ldap.json.$$
+  local VALIDATE_JSON=${BASE_DIR}/validate.json.$$
+  local ECS_ENV_JSON=${BASE_DIR}/env.json.$$
+  local ECS_CML_JSON=${BASE_DIR}/cml.json.$$
+
+  log_status "Configure LDAP and groups on ECS-CP"
+  local CDP_ACCOUNT_ID=$(curl -v -k --retry 3 $ECS_BASE_URL/authenticate/login/local 2>&1 | grep "location:" | sed 's/.*accountId=//;s/&.*//')
+  # Get a session token
+  curl -k -X POST -c $COOKIE_FILE -d "username=admin&password=admin" "$ECS_BASE_URL/authenticate/callback/local?accountId=$CDP_ACCOUNT_ID&state=$ECS_BASE_URL" >/dev/null 2>&1
+  # Get LDAP
+  curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"ldapProviderName": "cm-ldap"}' -o $LDAP_JSON $ECS_BASE_URL/api/v1/iam/describeLdapProvider >/dev/null 2>&1
+  # Add Groups
+  curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"groupName": "cdp-admins", "syncMembershipOnUserLogin": true}' $ECS_BASE_URL/api/v1/iam/createGroup >/dev/null 2>&1
+  curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"groupName": "cdp-users", "syncMembershipOnUserLogin": true}' $ECS_BASE_URL/api/v1/iam/createGroup >/dev/null 2>&1
+  # Assign Roles
+  curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"role": "crn:altus:iam:us-west-1:altus:role:PowerUser", "groupName": "cdp-admins"}' $ECS_BASE_URL/api/v1/iam/assignGroupRole >/dev/null 2>&1
+
+  # Get JSON values
+  local LDAP_url=$(jq -r '.ldapProvider.ldapDetails.url' $LDAP_JSON)
+  local LDAP_userSearchBase=$(jq -r '.ldapProvider.ldapDetails.userSearchBase' $LDAP_JSON)
+  local LDAP_userSearchFilter=$(jq -r '.ldapProvider.ldapDetails.userSearchFilter' $LDAP_JSON)
+  local LDAP_groupSearchBase=$(jq -r '.ldapProvider.ldapDetails.groupSearchBase' $LDAP_JSON)
+  local LDAP_groupSearchFilter=$(jq -r '.ldapProvider.ldapDetails.groupSearchFilter' $LDAP_JSON)
+  local LDAP_emailMappingAttribute=$(jq -r '.ldapProvider.ldapDetails.emailMappingAttribute' $LDAP_JSON)
+  local LDAP_bindDn=$(jq -r '.ldapProvider.ldapDetails.bindDn' $LDAP_JSON)
+  local LDAP_tlsCaCertificates="$(cat $ROOT_CA | awk '{printf "%s\\n", $0}')"
+  # Build request JSON
+  cat > $VALIDATE_JSON <<EOF
+{
+  "ldapProviderName": "cm-ldap",
+  "skipGroupSyncOnLogin": false,
+  "url": "$LDAP_url",
+  "userSearchBase": "$LDAP_userSearchBase",
+  "userSearchFilter": "$LDAP_userSearchFilter",
+  "groupSearchBase": "$LDAP_groupSearchBase",
+  "groupSearchFilter": "$LDAP_groupSearchFilter",
+  "syncGroupsOnLogin": true,
+  "emailMappingAttribute": "$LDAP_emailMappingAttribute",
+  "showAdvanced": false,
+  "bindDn": "$LDAP_bindDn",
+  "bindPassword": "",
+  "tlsCaCertificates": [
+    "$LDAP_tlsCaCertificates"
+  ]
+}
+EOF
+
+  # Handle LDAP Certificate validation
+  local return_code=400
+  if jq -e . $VALIDATE_JSON  >/dev/null 2>&1 ; then
+    # Validate LDAP Config
+    return_code=$(curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d @$VALIDATE_JSON $ECS_BASE_URL/api/v1/consoleauthenticationcdp/validateLdapConfig 2>/dev/null | jq -r '.code')
+    if [ $return_code == "200" ]; then
+      curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d @$VALIDATE_JSON $ECS_BASE_URL/api/v1/iam/updateLdapProvider 2>/dev/null
+      echo "LDAP is configured with IPA Root CA SSL certificate"
+    else
+      echo "ERROR: Can't validate LDAP Config, abort"
+      return 1
+    fi
+  else
+    echo "ERROR: Invalid LDAP Config, abort"
+    return 1
+  fi
+
+  log_status "Rebuild default environment on ECS-CP"
+  # Remove ecs environemnt created by express wizard
+  curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"envNameOrCrn": "ecs"}' $ECS_BASE_URL/api/v1/compute/deregisterClusters >/dev/null 2>&1
+  curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"environmentName": "ecs","cascading": true}' $ECS_BASE_URL/api/v1/environments2/deleteEnvironment >/dev/null 2>&1
+
+  # Build request JSON
+  cat > $ECS_ENV_JSON <<EOF
+{
+    "environmentName": "default",
+    "address": "https://$CLUSTER_HOST:7183",
+    "user": "admin",
+    "authenticationToken": "$THE_PWD",
+    "clusterNames": [
+        "OneNodeCluster"
+    ],
+    "kubeConfig": "",
+    "authenticationTokenType": "CLEARTEXT_PASSWORD",
+    "namespacePrefix": "cdp",
+    "dockerConfigJson": "",
+    "description": ""
+}
+EOF
+  # Call createPrivateEnvironment
+  curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d @$ECS_ENV_JSON $ECS_BASE_URL/api/v1/environments2/createPrivateEnvironment >/dev/null 2>&1
+  while true; do
+    [[ $(curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"environmentName": "default"}' $ECS_BASE_URL/api/v1/environments2/describeEnvironment 2>/dev/null| jq -r '.environment.status') == "AVAILABLE" ]] && break
+    echo "Waiting for environment to be ready.."
+    sleep 10
+  done
+
+  log_status "Provision CML Workspace"
+  # Build request JSON
+  cat > $ECS_CML_JSON <<EOF
+{
+    "environmentName": "default",
+    "workspaceName": "edge2ai",
+    "disableTLS": false,
+    "enableMonitoring": true,
+    "enableGovernance": true,
+    "enableModelMetrics": true,
+    "existingDatabaseConfig": {},
+    "mlGovernancePrincipal": "workshop",
+    "staticSubdomain": "edge2ai",
+    "namespace": "edge2ai",
+    "nfsDiskSize": "100",
+    "performCdswMigration": false
+}
+EOF
+  # Call createWorkspace 
+  curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d @$ECS_CML_JSON $ECS_BASE_URL/api/v1/ml/createWorkspace 2>/dev/null
+  local tries=99
+  while true; do
+    echo "Waiting for CML workspace to be ready.."
+    [[ $(curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{}' $ECS_BASE_URL/api/v1/ml/listWorkspaces 2>/dev/null | jq -r '.workspaces[] | .instanceStatus') == "installation:finished" ]] && break
+    [ $tries -eq 0 ] && { echo "ERROR: CML workspace failed to get ready state!"; break; }
+    sleep 10
+    ((tries--))
+  done
+
+  # Get CML URL
+  local CML_BASE_URL=$(curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{}' $ECS_BASE_URL/api/v1/ml/listWorkspaces 2>/dev/null | jq -r '.workspaces[] | .instanceUrl')
+  log_status "CML Workspace URL ${CML_BASE_URL}"
+
+  # Patch gen_credentials_ipa.sh for IPA support to ECS
+  sed -i.bak '/HOST=.*$/a [[ ! "$HOST" =~ \. ]] && HOST="${HOST}.svc.cluster.local"' /opt/cloudera/cm/bin/gen_credentials_ipa.sh
+  # Clean up
+  rm -f $COOKIE_FILE $LDAP_JSON $VALIDATE_JSON $ECS_ENV_JSON $ECS_CML_JSON || true
+
+  log_status "ECS Cluster is ready"
 }
 
 function wait_for_parcel_state() {
