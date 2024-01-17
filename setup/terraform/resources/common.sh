@@ -1568,7 +1568,7 @@ function paywall_curl() {
   if [[ $url != *"s3.amazonaws.com"* ]]; then
     auth=$CURL_BASIC_AUTH
   fi
-  retry_if_needed 5 5 "curl $auth --silent '${url}' > '${output}'"
+  retry_if_needed 5 5 "curl $auth --silent '${url}' -L > '${output}'"
 }
 
 function install_ecs() {
