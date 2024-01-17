@@ -148,7 +148,8 @@ print(yaml.dump(cm, Dumper=yaml.Dumper))
 EOF
 
   set +e
-  while ! kubectl get configmap -n kube-system rke2-coredns-rke2-coredns; do
+  # It takes about 5 minutes to get the pod ready, use kubectl wait
+  while ! kubectl wait --for=condition=ready pod -n kube-system -l k8s-app=kube-dns --timeout=60s; do
     echo "$(date) - Waiting for rke2-coredns-rke2-coredns to be created"
     sleep 5
   done
