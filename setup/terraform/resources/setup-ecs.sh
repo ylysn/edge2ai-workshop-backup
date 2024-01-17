@@ -174,7 +174,7 @@ elif [[ $ACTION == "configure-cml" ]]; then
   done
   set -e
   echo "$(date) - Prepare namespace for edge2ai CML Workspace"
-  edge2ai_ns=$(kubectl get ns  --no-headers -o custom-columns=':metadata.name' | grep "edge2ai")
+  edge2ai_ns=$(kubectl get ns  --no-headers -o custom-columns='\:metadata.name' | grep "edge2ai")
   if [[ $edge2ai_ns != "edge2ai" ]]; then
     kubectl create namespace edge2ai
     echo "$(date) - namespace for edge2ai CML Workspace created"
@@ -183,8 +183,8 @@ elif [[ $ACTION == "configure-cml" ]]; then
   fi
 
   echo "$(date) - Upload cml-tls-secret"
-  cml_tls_secret=$(kubectl get secret -n edge2ai --no-headers -o custom-columns=':metadata.name' | grep "cml-tls-secret")
-  if [[ $cml_tls_secret != "cml-tls-secret" ]]; then
+  cml_tls_secret=$(kubectl get secret -n edge2ai --no-headers -o custom-columns='\:metadata.name' | grep 'cml-tls-secret') && true
+  if [[ -z "$cml_tls_secret" ]]; then
     kubectl create secret tls cml-tls-secret --cert=$HOST_PEM --key=$UNENCRYTED_KEY_PEM -o yaml --dry-run=client | kubectl -n edge2ai create -f -
     echo "$(date) - cml-tls-secret for edge2ai CML Workspace created"
   else
@@ -203,7 +203,7 @@ elif [[ $ACTION == "configure-cml" ]]; then
   kubectl exec -it db-0 -c db -n edge2ai -- psql -P pager=off --expanded -U sense -c "update site_config set root_ca='$root_ca_cert' where id=1"
 
   echo "$(date) - Clean up deleted environment monitoring namespace"
-  ecs_prometheus_ns=$(kubectl get ns  --no-headers -o custom-columns=':metadata.name' | grep "ecs-.*-monitoring-platform")
+  ecs_prometheus_ns=$(kubectl get ns  --no-headers -o custom-columns='\:metadata.name' | grep "ecs-.*-monitoring-platform")
   nohup kubectl delete namespace $ecs_prometheus_ns >/dev/null 2>&1 &
 fi
 
