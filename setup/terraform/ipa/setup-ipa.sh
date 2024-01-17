@@ -135,6 +135,10 @@ echo "${IPA_ADMIN_PASSWORD}" | kinit admin >/dev/null
 log_status "Creating groups"
 add_groups $USERS_GROUP $ADMINS_GROUP shadow supergroup hue
 
+# added for ECS (ipausers group is reserved, use cdp-users as default)
+log_status "Default group is ${USERS_GROUP}"
+ipa config-mod --defaultgroup="$USERS_GROUP"
+
 log_status "Creating Cloudera Manager principal user and adding it to admins group"
 add_user admin /home/admin admins $ADMINS_GROUP $USERS_GROUP "trust admins" shadow supergroup
 
@@ -148,7 +152,8 @@ log_status "Creating HUE proxy user"
 add_user hue /home/hue hue $USERS_GROUP
 
 log_status "Creating other users"
-add_user workshop /home/workshop $USERS_GROUP
+# Promote workshop user to admin for ECS LDAP admin access
+add_user workshop /home/workshop $ADMINS_GROUP
 add_user alice /home/alice $USERS_GROUP
 add_user bob /home/bob $USERS_GROUP
 
