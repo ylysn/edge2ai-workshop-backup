@@ -1769,6 +1769,20 @@ EOF
   scp -o StrictHostKeyChecking=no -i /home/${SSH_USER}/.ssh/${NAMESPACE}.pem ${SSH_USER}@${ECS_PRIVATE_IP}:/home/${SSH_USER}/host.pem ${SEC_BASE}/ecs/host.pem
   chown -R cloudera-scm:cloudera-scm ${SEC_BASE}/ecs
 
+  log_status "Patch gen_credentials_ipa.sh for IPA support to ECS"
+  # Preparing the script before provisioning ECS
+  local ipa_patch_file=/tmp/ipa_patch_file.$$
+  cat > $ipa_patch_file <<EOF
+  # ipa host-add patch for k8s
+  if [[ \$HOST =~ \. ]]; then
+    ipa host-add \$HOST  --force --no-reverse
+  else
+    ipa host-add \$HOST.svc.cluster.local  --force --no-reverse
+  fi
+EOF
+  local search_string='  ipa host-add $HOST --force --no-reverse'
+  sed -i.bak -e '/'"$search_string"'/r '"$ipa_patch_file"'' -e '/'"$search_string"'/d' /opt/cloudera/cm/bin/gen_credentials_ipa.sh
+
   "${CURL[@]}" -X POST \
     "https://${CLUSTER_HOST}:7183/api/v51/clusters/${ECS_CLUSTER_NAME}/services" \
     -d @$svc_json_file
@@ -1785,6 +1799,7 @@ EOF
 }
 EOF
 
+  log_status "Start Embedded Control Plane installation"
   local ecs_call_log=/tmp/ecs-call.$(date +%s).log
   "${CURL[@]}" -X POST \
     -H "Referer: https://${CLUSTER_HOST}:7183/cmf/express-wizard/wizard?allowResume=false&clusterType=EXPERIENCE_CLUSTER" \
@@ -1923,30 +1938,17 @@ EOF
   # Call createWorkspace 
   curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d @$ECS_CML_JSON $ECS_BASE_URL/api/v1/ml/createWorkspace 2>/dev/null
   local tries=99
-  while true; do
+  while [[ $tries -ne 0 ]]; do
     echo "Waiting for CML workspace to be ready.."
     [[ $(curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{}' $ECS_BASE_URL/api/v1/ml/listWorkspaces 2>/dev/null | jq -r '.workspaces[] | .instanceStatus') == "installation:finished" ]] && break
-    [ $tries -eq 0 ] && { echo "ERROR: CML workspace failed to get ready state!"; break; }
-    sleep 10
     ((tries--))
+    sleep 10
   done
 
   # Get CML URL
   local CML_BASE_URL=$(curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{}' $ECS_BASE_URL/api/v1/ml/listWorkspaces 2>/dev/null | jq -r '.workspaces[] | .instanceUrl')
   log_status "CML Workspace URL ${CML_BASE_URL}"
 
-  # Patch gen_credentials_ipa.sh for IPA support to ECS
-  local ipa_patch_file=/tmp/ipa_patch_file.$$
-  cat > $ipa_patch_file <<EOF
-  # ipa host-add patch for k8s
-  if [[ \$HOST =~ \. ]]; then
-    ipa host-add \$HOST  --force --no-reverse
-  else
-    ipa host-add \$HOST.svc.cluster.local  --force --no-reverse
-  fi
-EOF
-  local search_string='  ipa host-add $HOST --force --no-reverse'
-  sed -i.bak -e '/'"$search_string"'/r '"$ipa_patch_file"'' -e '/'"$search_string"'/d' /opt/cloudera/cm/bin/gen_credentials_ipa.sh
   # Clean up
   rm -f $COOKIE_FILE $LDAP_JSON $VALIDATE_JSON $ECS_ENV_JSON $ECS_CML_JSON || true
 
