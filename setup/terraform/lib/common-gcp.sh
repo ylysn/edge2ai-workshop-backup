@@ -108,14 +108,14 @@ function list_cloud_instances() {
 function start_instances() {
   local instance_ids=$1
   for i in $instance_ids ; do
-    gcloud compute instances start $i --zone ${TF_VAR_gcp_region}-a 
+    gcloud compute instances start $i --async --zone ${TF_VAR_gcp_region}-a 
   done
 }
 
 function stop_instances() {
   local instance_ids=$1
   for i in $instance_ids ; do
-    gcloud compute instances stop $i --zone ${TF_VAR_gcp_region}-a 
+    gcloud compute instances stop $i --async --zone ${TF_VAR_gcp_region}-a 
   done
 }
 
