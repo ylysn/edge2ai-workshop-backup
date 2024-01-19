@@ -308,3 +308,102 @@ resource "azurerm_network_interface_security_group_association" "ipa_nic_sg_asso
   network_interface_id      = azurerm_network_interface.nic_ipa[count.index].id
   network_security_group_id = azurerm_network_security_group.workshop_cluster_sg.id
 }
+
+#================================================================================================================================
+
+resource "azurerm_virtual_machine" "ecs" {
+  count                            = (var.pvc_data_services ? var.cluster_count : 0)
+  name                             = "${var.owner}-${var.name_prefix}-ecs-${count.index}"
+  location                         = var.azure_region
+  resource_group_name              = azurerm_resource_group.rg.name
+  network_interface_ids            = [azurerm_network_interface.nic_ecs[count.index].id]
+  vm_size                          = var.ecs_instance_type
+  delete_os_disk_on_termination    = true
+  delete_data_disks_on_termination = true
+
+  depends_on = [
+    azurerm_network_interface_security_group_association.ecs_nic_sg_assoc
+  ]
+
+  storage_image_reference {
+    publisher = var.base_image_publisher
+    offer     = var.base_image_offer
+    sku       = var.base_image_sku
+    version   = var.base_image_version
+  }
+
+  plan {
+    publisher = var.base_image_publisher
+    product   = var.base_image_offer
+    name      = var.base_image_sku
+  }
+
+  storage_os_disk {
+    name              = "${var.owner}-${var.name_prefix}-ecs-${count.index}-osdisk"
+    managed_disk_type = "Standard_LRS"
+    disk_size_gb      = 500
+    caching           = "ReadWrite"
+    create_option     = "FromImage"
+  }
+
+  os_profile {
+    custom_data    = "#cloud-config\nbootcmd:\n  - echo \"export CLUSTER_ID=${count.index}\" >> /etc/workshop.conf"
+    computer_name  = "ecs"
+    admin_username = var.ssh_username
+  }
+
+  os_profile_linux_config {
+    disable_password_authentication = true
+
+    ssh_keys {
+      path     = "/home/${var.ssh_username}/.ssh/authorized_keys"
+      key_data = file(var.ssh_public_key)
+    }
+  }
+
+  tags = {
+    owner   = var.owner
+    project = var.project
+    enddate = var.enddate
+  }
+}
+
+resource "azurerm_network_interface" "nic_ecs" {
+  count               = (var.pvc_data_services ? var.cluster_count : 0)
+  name                = "${var.owner}-${var.name_prefix}-ecs-nic-${count.index}"
+  location            = var.azure_region
+  resource_group_name = azurerm_resource_group.rg.name
+
+  ip_configuration {
+    name                          = "internal"
+    subnet_id                     = azurerm_subnet.subnet.id
+    private_ip_address_allocation = "Dynamic"
+    public_ip_address_id          = azurerm_public_ip.ip_ecs[count.index].id
+  }
+
+  tags = {
+    owner   = var.owner
+    project = var.project
+    enddate = var.enddate
+  }
+}
+
+resource "azurerm_public_ip" "ip_ecs" {
+  count               = (var.pvc_data_services ? var.cluster_count : 0)
+  name                = "${var.owner}-${var.name_prefix}-ecs-ip-${count.index}"
+  resource_group_name = azurerm_resource_group.rg.name
+  location            = var.azure_region
+  allocation_method   = "Static"
+
+  tags = {
+    owner   = var.owner
+    project = var.project
+    enddate = var.enddate
+  }
+}
+
+resource "azurerm_network_interface_security_group_association" "ecs_nic_sg_assoc" {
+  count                     = (var.pvc_data_services ? var.cluster_count : 0)
+  network_interface_id      = azurerm_network_interface.nic_ecs[count.index].id
+  network_security_group_id = azurerm_network_security_group.workshop_cluster_sg.id
+}

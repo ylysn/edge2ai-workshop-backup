@@ -82,7 +82,10 @@ resource "azurerm_network_security_rule" "workshop_public_ips_sg_rule" {
   protocol                    = "*"
   source_port_range           = "*"
   destination_port_range      = "*"
-  source_address_prefixes     = [ for ip in azurerm_public_ip.ip_cluster.*.ip_address: "${ip}/32" ]
+  source_address_prefixes     = flatten([
+    [ for ip in azurerm_public_ip.ip_cluster.*.ip_address: "${ip}/32" ],
+    [ for ip in azurerm_public_ip.ip_ecs.*.ip_address: "${ip}/32" ],
+  ])
   destination_address_prefix  = "*"
 }
 

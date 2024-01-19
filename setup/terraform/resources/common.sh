@@ -1375,6 +1375,8 @@ function resolve_host_addresses() {
         export PUBLIC_DNS=${prefix}.${PUBLIC_IP}.nip.io
         ;;
     azure)
+        systemctl enable chronyd
+        systemctl restart chronyd
         export PRIVATE_DNS="$(cat /etc/hostname).$(grep search /etc/resolv.conf | awk '{print $2}')"
         export PRIVATE_IP=$(hostname -I | awk '{print $1}')
         export PUBLIC_DNS=${prefix}.${PUBLIC_IP}.nip.io
