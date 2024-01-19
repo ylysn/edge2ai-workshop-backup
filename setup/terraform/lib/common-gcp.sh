@@ -107,17 +107,23 @@ function list_cloud_instances() {
 
 function start_instances() {
   local instance_ids=$1
-  gcloud compute instances start $instance_ids --zone ${TF_VAR_gcp_region}-a 
+  for i in $instance_ids ; do
+    gcloud compute instances start $i --zone ${TF_VAR_gcp_region}-a 
+  done
 }
 
 function stop_instances() {
   local instance_ids=$1
-  gcloud compute instances stop $instance_ids --zone ${TF_VAR_gcp_region}-a 
+  for i in $instance_ids ; do
+    gcloud compute instances stop $i --zone ${TF_VAR_gcp_region}-a 
+  done
 }
 
 function terminate_instances() {
   local instance_ids=$1
-  gcloud compute instances delete $instance_ids --zone ${TF_VAR_gcp_region}-a --delete-disks=all
+  for i in $instance_ids ; do
+    gcloud compute instances delete $i --zone ${TF_VAR_gcp_region}-a --delete-disks=all
+  done
 }
 
 function set_instances_tag() {
