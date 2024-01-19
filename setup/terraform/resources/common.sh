@@ -365,6 +365,13 @@ function validate_stack() {
       if [[ $USE_IPA == "no" ]]; then
         echo "${C_RED}ERROR: ECS requires IPA to be enabled.${C_NORMAL}" > /dev/stderr 
         errors=1
+      else
+        local stack_cm7_version=$(echo $CM_VERSION | sed 's/\.//g')
+        local stack_ecs_version=$(echo $ECS_VERSION | sed 's/\.//g')
+        if [[ $stack_ecs_version -ge 152 ]] && [[ $stack_cm7_version -lt 71132 ]]; then
+          echo "${C_RED}ERROR: ECS 1.5.2 requires Cloudera Manager version 7.11.3.2+.${C_NORMAL}" > /dev/stderr 
+          errors=1
+        fi
       fi
     else
       echo "${C_RED}ERROR: ECS requires TLS and Kerberos to be enabled.${C_NORMAL}" > /dev/stderr 
