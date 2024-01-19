@@ -152,7 +152,7 @@ function unprotect_instance() {
 
 function security_groups() {
   local sg_type=$1
-  echo ${TF_VAR_owner}-${NAMESPACE}-${sg_type}-access
+  echo ${TF_VAR_owner}-${NAMESPACE}-${sg_type}-access | awk '{print tolower($0)}'
 }
 
 function get_ingress() {
