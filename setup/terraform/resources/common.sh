@@ -1382,6 +1382,10 @@ function resolve_host_addresses() {
         export PUBLIC_DNS=${prefix}.${PUBLIC_IP}.nip.io
         ;;
     azure)
+        # Added to prevent DNS leak to nip.io
+        sed -i.bak -e "s/plugins = ifcfg-rh,/dns=none/g" /etc/NetworkManager/NetworkManager.conf 
+        sed -i.bak -e "s/$(hostname -d)//g" /etc/resolv.conf
+        systemctl restart NetworkManager
         systemctl enable chronyd
         systemctl restart chronyd
         export PRIVATE_DNS="$(cat /etc/hostname).$(grep search /etc/resolv.conf | awk '{print $2}')"
