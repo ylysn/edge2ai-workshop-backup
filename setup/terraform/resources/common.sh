@@ -360,6 +360,18 @@ function validate_stack() {
     fi
   fi
 
+  if [ "${HAS_ECS:-}" == "1" ]; then
+    if [[ $(is_kerberos_enabled) == "yes" ]] && [[ $(is_tls_enabled) == "yes" ]]; then
+      if [[ $USE_IPA == "no" ]]; then
+        echo "${C_RED}ERROR: ECS requires IPA to be enabled.${C_NORMAL}" > /dev/stderr 
+        errors=1
+      fi
+    else
+      echo "${C_RED}ERROR: ECS requires TLS and Kerberos to be enabled.${C_NORMAL}" > /dev/stderr 
+      errors=1
+    fi
+  fi
+
   if [ "$errors" != "0" ]; then
     echo "${C_RED}ERROR: Please fix the errors above in the configuration file $stack_file and try again.${C_NORMAL}" > /dev/stderr
     exit 1
