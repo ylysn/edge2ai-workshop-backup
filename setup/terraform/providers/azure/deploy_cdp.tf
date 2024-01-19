@@ -15,6 +15,11 @@ resource "null_resource" "deploy_cdp" {
   }
 
   provisioner "file" {
+    source      = var.ssh_private_key
+    destination = "/home/${var.ssh_username}/.ssh/${var.namespace}.pem"
+  }
+
+  provisioner "file" {
     source      = "${var.base_dir}/resources"
     destination = "/tmp/"
   }
@@ -29,8 +34,9 @@ resource "null_resource" "deploy_cdp" {
       "set -o errexit",
       "set -o xtrace",
       "sudo bash -c 'echo -e \"export CLUSTERS_PUBLIC_DNS=${join(",", formatlist("cdp.%s.nip.io", azurerm_public_ip.ip_cluster.*.ip_address))}\" >> /etc/workshop.conf'",
-      "sudo nohup bash -x /tmp/resources/setup.sh azure \"${var.ssh_username}\" \"${var.ssh_password}\" \"${var.namespace}\" \"\" \"${(var.use_ipa ? "ipa.${azurerm_public_ip.ip_ipa.0.ip_address}.nip.io" : "")}\" \"${(var.use_ipa ? azurerm_network_interface.nic_ipa.0.private_ip_address : "")}\" > /tmp/resources/setup.log 2>&1 &",
+      "sudo nohup bash -x /tmp/resources/setup.sh azure \"${var.ssh_username}\" \"${var.ssh_password}\" \"${var.namespace}\" \"\" \"${(var.use_ipa ? "ipa.${azurerm_public_ip.ip_ipa.0.ip_address}.nip.io" : "")}\" \"${(var.use_ipa ? azurerm_network_interface.nic_ipa.0.private_ip_address : "")}\" \"${(var.pvc_data_services ? "ecs.${azurerm_public_ip.ip_ecs[count.index].ip_address}.nip.io" : "")}\" \"${(var.pvc_data_services ? azurerm_network_interface.nic_ecs[count.index].private_ip_address : "")}\" > /tmp/resources/setup.log 2>&1 &",
       "sleep 1 # don't remove - needed for the nohup to work",
     ]
   }
 }
+
