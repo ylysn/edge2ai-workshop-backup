@@ -1011,7 +1011,8 @@ if [ "${HAS_CDSW:-}" == "1" ]; then
   nohup python -u /tmp/resources/cdsw_setup.py $(echo "$PUBLIC_DNS" | sed -E 's/cdp.(.*).nip.io/\1/') /tmp/resources/iot_model.pkl /tmp/resources/the_pwd.txt > /tmp/resources/cdsw_setup.log 2>&1 &
 fi
 
-if [[ ! -z ${ECS_PUBLIC_DNS:-} ]]; then
+if [[ "${HAS_ECS:-}" == "1" ]]; then
+  log_status "Starting ECS setup on ${ECS_PUBLIC_DNS}"
   install_ecs
 fi
 
