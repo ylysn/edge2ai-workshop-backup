@@ -216,7 +216,9 @@ elif [[ $ACTION == "configure-cml" ]]; then
   done
   ecs_prometheus_ns=$(kubectl get ns -o json | jq -r '.items[] | select(.metadata.name | test("ecs-[A-Za-z0-9]+-monitoring-platform")).metadata.name')
   nohup kubectl delete namespace $ecs_prometheus_ns >/dev/null 2>&1 &
-
+  # Make sure chrony is enabled
+  systemctl enable chronyd
+  
   log_status "CML deployed successfully"
 fi
 

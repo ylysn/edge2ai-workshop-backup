@@ -1014,6 +1014,8 @@ fi
 if [[ "${HAS_ECS:-}" == "1" ]]; then
   log_status "Starting ECS setup on ${ECS_PUBLIC_DNS}"
   install_ecs
+  # Make sure chrony is enabled
+  systemctl enable chronyd
 fi
 
 log_status "Cleaning up"
