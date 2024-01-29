@@ -6,6 +6,11 @@ set -o xtrace
 trap 'echo Setup return code: $?' 0
 BASE_DIR=$(cd $(dirname $0); pwd -L)
 
+if [ "$USER" == "root" ]; then
+  echo "ERROR: This script ($0) must be executed by sudo user"
+  exit 1
+fi
+
 ACTION=${1:-}
 
 THE_PWD=Supersecret1
@@ -223,7 +228,8 @@ function create_certs() {
   if [[ ! -z ${LOCAL_HOSTNAME:-} ]] && [ $LOCAL_HOSTNAME != $PUBLIC_DNS ] ; then
     ALT_NAMES="DNS:${LOCAL_HOSTNAME},"
   fi
-  export ALT_NAMES="${ALT_NAMES}DNS:$(hostname -f),DNS:*.ocp.${public_ip}.nip.io,DNS:*.apps.ocp.${public_ip}.nip.io,DNS:*.crc.testing,DNS:*.apps-crc.testing"
+  export ALT_NAMES="${ALT_NAMES}DNS:${PUBLIC_DNS},DNS:*.${PUBLIC_DNS},DNS:api.${PUBLIC_DNS},DNS:console.apps.${PUBLIC_DNS},DNS:oauth.apps.${PUBLIC_DNS},DNS:*.apps.${PUBLIC_DNS},DNS:*.crc.testing,DNS:*.apps-crc.testing"
+
   openssl req\
     -new\
     -key ${KEY_PEM} \
@@ -262,13 +268,19 @@ EOF
   # Sign cert
   if [[ $ipa_host != "" ]]; then
     kinit -kt $KEYTABS_DIR/admin.keytab admin
+    set +e
     if [[ ! -z ${LOCAL_HOSTNAME:-} ]]; then
       ipa host-add-principal $(hostname -f) "host/${LOCAL_HOSTNAME}" || true
     fi
-    ipa host-add-principal $(hostname -f) "host/*.ocp.${public_ip}.nip.io"
-    ipa host-add-principal $(hostname -f) "host/*.apps.ocp.${public_ip}.nip.io"
+
+    ipa host-add-principal $(hostname -f) "host/*.${PUBLIC_DNS}"
+    ipa host-add-principal $(hostname -f) "host/api.${PUBLIC_DNS}"
+    ipa host-add-principal $(hostname -f) "host/console.apps.${PUBLIC_DNS}"
+    ipa host-add-principal $(hostname -f) "host/oauth.apps.${PUBLIC_DNS}"
+    ipa host-add-principal $(hostname -f) "host/*.apps.${PUBLIC_DNS}"
     ipa host-add-principal $(hostname -f) "host/*.crc.testing"
     ipa host-add-principal $(hostname -f) "host/*.apps-crc.testing"
+    set -e
     ipa cert-request ${CSR_PEM} --principal=host/$(hostname -f)
     echo -e "-----BEGIN CERTIFICATE-----\n$(ipa host-find $(hostname -f) | grep Certificate: | tail -1 | awk '{print $NF}')\n-----END CERTIFICATE-----" | openssl x509 > ${HOST_PEM}
 
@@ -302,9 +314,10 @@ EOF
 
 function enable_nfs() {
   sudo dnf install nfs-utils
-  sudo mkdir /nfs/general -p
-  sudo chown 8536:8536 /nfs/general
-  echo "/nfs/general  192.168.130.1/24(rw,sync,no_root_squash,no_subtree_check)" | sudo tee -a /etc/exports
+  sudo mkdir /nfs/workshop -p
+  sudo chown 8536:8536 /nfs/workshop
+  sudo chmod g+srwx /nfs/workshop
+  echo "/nfs/workshop  *(rw,sync,no_root_squash,no_all_squash,no_subtree_check)" | sudo tee -a /etc/exports
   sudo systemctl enable nfs-server
   sudo systemctl start nfs-server
   sudo firewall-cmd --permanent --add-service=nfs
@@ -359,39 +372,127 @@ EOL"
   sudo systemctl restart haproxy
 }
 
-function patch_dns {
-  echo "Patch OpenShift Router to use nip.io for outbound routing ..."
-  fqdn="$PUBLIC_DNS"
+function patch_crc {
+  echo "Patch OpenShift CRC to use nip.io hostname for apps"
+   # test block 
+  # PUBLIC_DNS=$(hostname -f)
+  # OCP_PATCH_JSON=patch.$$.json
+  # TRUSTSTORE_PEM=/home/rocky/ocp/security/x509/truststore.pem
+  # CERT_PEM=/home/rocky/ocp/security/x509/host.pem
+  # UNENCRYTED_KEY_PEM=/home/rocky/ocp/security/x509/unencrypted-key.pem
+  # test block 
+  oc_patch_string=''
+  OCP_PATCH_JSON=/tmp/patch.$$.json
 
   apps_domain=$(oc get ingresses.config/cluster -o json | jq -r '.spec.appsDomain')
   if [[ $apps_domain != "null" ]]; then
       oc patch ingresses.config/cluster --type json --patch '[{ "op": "remove", "path": "/spec/appsDomain" }]'
   fi
-  oc patch ingresses.config/cluster --type merge -p '{"spec":{"appsDomain":"'"$fqdn"'"}}'
 
-  default_dns_pod=$(oc get po -A | grep -i dns-default | awk '{print $2}')
-  oc wait --for=condition=Ready --timeout=10m pod/$default_dns_pod -n openshift-dns &> /dev/null
-  router_default_pod=$(oc get po -n openshift-ingress | tail -1 | awk '{print $1}')
-  ROUTER_SUBDOMAIN="\${name}-\${namespace}.apps.${fqdn}"
-  oc -n openshift-ingress set env deployment/router-default --overwrite ROUTER_SUBDOMAIN=$ROUTER_SUBDOMAIN ROUTER_ALLOW_WILDCARD_ROUTES="true" ROUTER_OVERRIDE_HOSTNAME="true" &> /dev/null
-  oc -n openshift-ingress delete po $router_default_pod --force --grace-period=0 &> /dev/null
-  sleep 5
-  router_default_pod=$(oc get po -n openshift-ingress | tail -1 | awk '{print $1}')
-  oc wait --for=condition=Ready --timeout=10m pod/$router_default_pod -n openshift-ingress
-
-}
-
-function add_ca_cert {
-  # Create PEM combined certificate
-  echo $CERT_PEM | sudo tee -a $OCP_CERT
-  echo $TRUSTSTORE_PEM | sudo tee -a  $OCP_CERT
-
+  # add custom-ca
   echo "Adding Custom CA to OpenShift..."
-  $PROXY_CA_NAME=$(oc get proxy cluster -o json | jq -r '.spec.trustedCA.name')
+  PROXY_CA_NAME=$(oc get proxy cluster -o json | jq -r '.spec.trustedCA.name')
   echo "CA_NAME=$PROXY_CA_NAME"
+  if [[ $PROXY_CA_NAME = "" ]]; then
+    # ingress-custom
+    oc create configmap custom-ca --from-file=ca-bundle.crt=$ROOT_PEM -n openshift-config
+    oc patch proxy/cluster --type=merge --patch='{"spec":{"trustedCA":{"name":"custom-ca"}}}'
+    oc create secret tls default-ingress-custom --cert=$HOST_PEM --key=$UNENCRYTED_KEY_PEM -n openshift-ingress
+    oc patch ingresscontroller.operator default --type=merge -p '{"spec":{"defaultCertificate": {"name": "default-ingress-custom"}}}' -n openshift-ingress-operator
+    # console-custom
+    oc create secret tls console-custom --cert=$HOST_PEM --key=$UNENCRYTED_KEY_PEM -n openshift-config
+  fi
 
-  oc create configmap custom-ca-bundle --from-file=ca-bundle.crt=$ROOT_PEM -n openshift-config
-  oc patch proxy/cluster --type=merge --patch='{"spec":{"trustedCA":{"name":"custom-ca-bundle"}}}'
+  # add appsDomains
+  cat > $OCP_PATCH_JSON <<PATCH
+{
+  "spec": {
+    "appsDomain": "apps.$PUBLIC_DNS"
+    }
+}
+PATCH
+  oc_patch_string=$(cat $OCP_PATCH_JSON)
+  oc patch ingresses.config/cluster --type merge -p "${oc_patch_string//[[:blank:]]/}"
+
+  # add componentRoutes
+  cat > $OCP_PATCH_JSON <<PATCH
+{
+  "spec": {
+    "componentRoutes": [
+      {
+        "name": "oauth-openshift",
+        "namespace": "openshift-authentication",
+        "hostname": "oauth.apps.$PUBLIC_DNS"
+      },
+      {
+        "name": "console",
+        "namespace": "openshift-console",
+        "hostname": "console.apps.$PUBLIC_DNS",
+        "servingCertKeyPairSecret": {
+          "name": "console-custom"
+        }
+      }
+    ]
+  }
+}
+PATCH
+  oc_patch_string=$(cat $OCP_PATCH_JSON)
+  oc patch ingresses.config/cluster --type merge -p "${oc_patch_string//[[:blank:]]/}"
+
+  # get api ca-cert
+  API_ROOT_PEM=/tmp/api-ca-cert.pem
+  echo quit | openssl s_client -connect api.crc.testing:6443 -showcerts -servername api.crc.testing:6443 2>/dev/null </dev/null |  sed -ne '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' > $API_ROOT_PEM
+  CA_PEM_JSON=$(cat $TRUSTSTORE_PEM | sed -e 's/^/      /')
+  HOST_PEM_JSON=$(cat $CERT_PEM | sed -e 's/^/      /')
+  API_CA_PEM_JSON=$(cat $API_ROOT_PEM | sed -e 's/^/      /')
+  KEY_PEM_JSON=$(cat $UNENCRYTED_KEY_PEM | sed -e 's/^/      /')
+  cat > $OCP_PATCH_JSON <<PATCH
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  labels:
+    component: apiserver
+    provider: kubernetes
+  name: api
+  namespace: default
+spec:
+  host: api.$PUBLIC_DNS
+  to:
+    kind: Service
+    name: kubernetes
+    weight: 100
+  port:
+    targetPort: https
+  tls:
+    caCertificate: |-
+$CA_PEM_JSON
+    certificate: |
+$HOST_PEM_JSON
+    destinationCACertificate: |-
+$API_CA_PEM_JSON
+    insecureEdgeTerminationPolicy: Redirect
+    key: |
+$KEY_PEM_JSON
+    termination: reencrypt
+  wildcardPolicy: None
+PATCH
+  # add api route
+  retries=300
+  while [[ $retries -gt 0 ]]; do
+    set +e
+    oc create -n default -f $OCP_PATCH_JSON
+    err=$?
+    set -e
+    if [[ $err == 0 ]]; then
+      break
+    fi
+    retries=$((retries - 1))
+    sleep 5
+    echo "Waiting for OpenShift cluster to be ready (retries left: $retries)"
+  done
+  # enable autostart for crc vm
+  sudo virsh autostart crc
+  
 }
 
 if [[ $ACTION == "install" ]]; then
@@ -406,32 +507,31 @@ if [[ $ACTION == "install" ]]; then
 
   # CA details
   SEC_BASE=$BASE_DIR/security
-  export CA_DIR=${SEC_BASE}/ca
-  export CA_KEY=$CA_DIR/ca-key.pem
-  export CA_KEY_PWD=${THE_PWD}
-  export CA_CONF=$CA_DIR/openssl.cnf
-  export CA_EMAIL=admin@cloudera.com
-  export ROOT_PEM=$CA_DIR/ca-cert.pem
+  CA_DIR=${SEC_BASE}/ca
+  CA_KEY=$CA_DIR/ca-key.pem
+  CA_KEY_PWD=${THE_PWD}
+  CA_CONF=$CA_DIR/openssl.cnf
+  CA_EMAIL=admin@cloudera.com
+  ROOT_PEM=$CA_DIR/ca-cert.pem
 
-  export KEY_PEM=${SEC_BASE}/x509/key.pem
-  export UNENCRYTED_KEY_PEM=${SEC_BASE}/x509/unencrypted-key.pem
-  export CSR_PEM=${SEC_BASE}/x509/host.csr
-  export HOST_PEM=${SEC_BASE}/x509/host.pem
-  export KEY_PWD=${THE_PWD}
-  export KEYSTORE_PWD=$KEY_PWD
-  export TRUSTSTORE_PWD=${THE_PWD}
+  KEY_PEM=${SEC_BASE}/x509/key.pem
+  UNENCRYTED_KEY_PEM=${SEC_BASE}/x509/unencrypted-key.pem
+  CSR_PEM=${SEC_BASE}/x509/host.csr
+  HOST_PEM=${SEC_BASE}/x509/host.pem
+  KEY_PWD=${THE_PWD}
+  KEYSTORE_PWD=$KEY_PWD
+  TRUSTSTORE_PWD=${THE_PWD}
 
   # Generated files
-  export CERT_PEM=${SEC_BASE}/x509/cert.pem
-  export TRUSTSTORE_PEM=${SEC_BASE}/x509/truststore.pem
-  export HAPROXY_SSL=${SEC_BASE}/haproxy.pem
-  export OCP_CERT=${SEC_BASE}/ocp.pem
+  CERT_PEM=${SEC_BASE}/x509/cert.pem
+  TRUSTSTORE_PEM=${SEC_BASE}/x509/truststore.pem
+  HAPROXY_SSL=${SEC_BASE}/haproxy.pem
 
   log_status "Setting host and domain names"
-  export PRIVATE_IP=$(hostname -I | awk '{print $1}')
-  export LOCAL_HOSTNAME=$(hostname -f)
-  export PUBLIC_IP=$(curl -sL http://ifconfig.me || curl -sL http://api.ipify.org/ || curl -sL https://ipinfo.io/ip)
-  export PUBLIC_DNS=ocp.${PUBLIC_IP}.nip.io
+  PRIVATE_IP=$(hostname -I | awk '{print $1}')
+  LOCAL_HOSTNAME=$(hostname -f)
+  PUBLIC_IP=$(curl -sL http://ifconfig.me || curl -sL http://api.ipify.org/ || curl -sL https://ipinfo.io/ip)
+  PUBLIC_DNS=ocp.${PUBLIC_IP}.nip.io
 
   sudo sed -i.bak "/${LOCAL_HOSTNAME}/d;/^${PRIVATE_IP}/d;/^::1/d" /etc/hosts
   if [[ "$LOCAL_HOSTNAME" == "$PUBLIC_DNS" ]]; then
@@ -450,11 +550,12 @@ if [[ $ACTION == "install" ]]; then
   fi
   echo "HOSTNAME=${PUBLIC_DNS}" | sudo tee -a /etc/sysconfig/network
 
-  log_status "Settup Packages..."
-  yum_install wget libvirt qemu-kvm haproxy cockpit cockpit-machines
+  log_status "Setup Packages..."
+  yum_install wget libvirt qemu-kvm haproxy cockpit cockpit-machines git
   
   log_status "Creating TLS certificates"
   echo "$IPA_PRIVATE_IP $IPA_HOST" | sudo tee -a /etc/hosts
+  wait_for_ipa "$IPA_HOST"
   install_ipa_client "$IPA_HOST"
   create_certs "$IPA_HOST"
 
@@ -479,12 +580,13 @@ if [[ $ACTION == "install" ]]; then
   echo $THE_PWD | sudo passwd --stdin $USER
 
   log_status "Installing OpenShift CRC server"
-  # Install CRC 2.19.0 (OpenShift 4.12)
-  wget https://developers.redhat.com/content-gateway/file/pub/openshift-v4/clients/crc/2.19.0/crc-linux-amd64.tar.xz
-  tar xvf crc-linux-amd64.tar.xz 
-  sudo mv crc-linux-2.19.0-amd64/crc /usr/local/bin/.
+  # Install CRC
+  wget https://mirror.openshift.com/pub/openshift-v4/clients/crc/2.31.0/crc-linux-amd64.tar.xz -O /tmp/crc-linux-2.31.0-amd64.tar.xz
+  tar xvf /tmp/crc-linux-2.31.0-amd64.tar.xz -C /tmp
+  sudo mv /tmp/crc-linux-2.31.0-amd64/crc /usr/local/bin/crc
 
-  # Config CRC
+  # Config CRC (OpenShift 4.12)
+  THE_PWD=Supersecret1
   CRC_CPU=$(( $(lscpu -J | jq -r '.lscpu[]? | select(.field=="CPU(s):") | .data') * 95/100))
   CRC_MEM=$(awk '/MemFree/ { printf "%.0f \n", $2/1024 }' /proc/meminfo)
   CRC_DISK=$(( $(df -BG . | tail -n1 | awk '{print $4}' | grep -o -E '[0-9]+') * 95/100))
@@ -495,15 +597,16 @@ if [[ $ACTION == "install" ]]; then
   crc config set cpus $CRC_CPU
   crc config set memory $CRC_MEM
   crc config set disk-size $CRC_DISK
+  crc config set bundle 'docker://quay.io/crcont/okd-bundle:4.12.0-0.okd-2023-02-18-033438'
   crc config view
-
   # Prep CRC Image
   LOG_FILE=crc_setup_stderr.log
-  crc setup --show-progressbars --log-level DEBUG 2>>$LOG_FILE 
-  # Start CRC VM with 400GB disk
+  crc setup --log-level DEBUG 2>>$LOG_FILE 
+  # Start CRC VM
   LOG_FILE=crc_start_stderr.log
+  set +e
   crc start --log-level DEBUG 2>>$LOG_FILE 
-
+  set -e
   # Enable oc command
   eval $(crc oc-env)
   # Login to OpenShift cluster
@@ -515,11 +618,8 @@ if [[ $ACTION == "install" ]]; then
   log_status "Enable NFS"
   enable_nfs
 
-  log_status "Patching OpenShift"
-  patch_dns
-
-  log_status "Loading certificates to OpenShift"
-  add_ca_cert
+  log_status "Patching OpenShift CRC"
+  patch_crc
 
   log_status "Installed CRC Successfully"
 

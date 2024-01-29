@@ -32,7 +32,7 @@ resource "null_resource" "deploy_cdp" {
       "set -o errexit",
       "set -o xtrace",
       "sudo bash -c 'echo -e \"export CLUSTERS_PUBLIC_DNS=${join(",", formatlist("cdp.%s.nip.io", google_compute_address.cluster-public-ip.*.address))}\" >> /etc/workshop.conf'",
-      "sudo nohup bash -x /tmp/resources/setup.sh gcp \"${var.ssh_username}\" \"${var.ssh_password}\" \"${var.namespace}\" \"\" \"${(var.use_ipa ? "ipa.${google_compute_address.ipa-public-ip[0].address}.nip.io" : "")}\" \"${(var.use_ipa ? google_compute_instance.ipa[0].network_interface.0.network_ip : "")}\" \"${(var.pvc_data_services ? "ecs.${google_compute_address.ecs-public-ip[count.index].address}.nip.io" : "")}\" \"${(var.pvc_data_services ? google_compute_instance.ecs[count.index].network_interface.0.network_ip : "")}\" > /tmp/resources/setup.log 2>&1 &",
+      "sudo nohup bash -x /tmp/resources/setup.sh gcp \"${var.ssh_username}\" \"${var.ssh_password}\" \"${var.namespace}\" \"\" \"${(var.use_ipa ? "ipa.${google_compute_address.ipa-public-ip[0].address}.nip.io" : "")}\" \"${(var.use_ipa ? google_compute_instance.ipa[0].network_interface.0.network_ip : "")}\" \"${(var.pvc_data_services ? "ecs.${google_compute_address.ecs-public-ip[count.index].address}.nip.io" : "")}\" \"${(var.pvc_data_services ? google_compute_instance.ecs[count.index].network_interface.0.network_ip : "")}\" \"${(var.deploy_ocp ? "ocp.${google_compute_address.ocp-public-ip[count.index].address}.nip.io" : "")}\"> /tmp/resources/setup.log 2>&1 &",
       "sleep 1 # don't remove - needed for the nohup to work",
     ]
   }

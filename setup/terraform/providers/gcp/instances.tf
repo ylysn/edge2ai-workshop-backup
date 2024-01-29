@@ -2,23 +2,25 @@
 locals {
   init_script = <<-EOF
   #!/bin/bash
-  # centos-cloud image post-fix script
+  # gcp cloud image post-fix script
   # - set hostname
-  # - add centos user
+  # - add sudo user
   # - allow root access
-  hostnamectl set-hostname %s --static
-  CONF="/etc/workshop.conf"
-  if [[ ! -f $CONF ]]; then
+  SUDO_USER='%s'
+  CLUSTER_HOSTNAME='%s'
+  AUTH_KEYS='%s'
+  hostnamectl set-hostname $CLUSTER_HOSTNAME --static
+  CONF_FILE="/etc/workshop.conf"
+  if [[ ! -f $CONF_FILE ]]; then
     #initialization on first boot
-    useradd -G 4,39,1000 centos
-    AUTH_KEYS='%s'
-    mkdir /home/centos/.ssh
-    touch /home/centos/.ssh/authorized_keys
-    chmod 0600 /home/centos/.ssh/authorized_keys
-    chown -R centos:centos /home/centos/.ssh
-    echo $AUTH_KEYS >> /home/centos/.ssh/authorized_keys
+    useradd -G 4,39,1000 $SUDO_USER
+    mkdir /home/$SUDO_USER/.ssh
+    touch /home/$SUDO_USER/.ssh/authorized_keys
+    chmod 0600 /home/$SUDO_USER/.ssh/authorized_keys
+    chown -R $SUDO_USER:$SUDO_USER /home/$SUDO_USER/.ssh
+    echo $AUTH_KEYS >> /home/$SUDO_USER/.ssh/authorized_keys
     sed -i.bak 's/PermitRootLogin *no/PermitRootLogin yes/' /etc/ssh/sshd_config
-    echo "export CLUSTER_ID=%s" >> $CONF
+    echo "export CLUSTER_ID=%s" >> $CONF_FILE
   fi
   EOF
 }
@@ -29,7 +31,7 @@ resource "google_compute_instance" "cluster" {
   name                    = "${var.owner}-${var.name_prefix}-cluster-${count.index}"
   machine_type            = var.cluster_instance_type
   zone                    = "${var.gcp_region}-${var.gcp_az}"
-  metadata_startup_script = format(local.init_script,"cdp.${google_compute_address.cluster-public-ip[count.index].address}.nip.io",file(var.ssh_public_key), count.index)
+  metadata_startup_script = format(local.init_script,var.ssh_username,"cdp.${google_compute_address.cluster-public-ip[count.index].address}.nip.io",file(var.ssh_public_key), count.index)
   hostname                = "cdp.${google_compute_address.cluster-public-ip[count.index].address}.nip.io"
 
   tags = [
@@ -91,7 +93,7 @@ resource "google_compute_instance" "web" {
   name                    = "${var.owner}-${var.name_prefix}-web"
   machine_type            = "e2-standard-2"
   zone                    = "${var.gcp_region}-${var.gcp_az}"
-  metadata_startup_script = format(local.init_script,"web.${google_compute_address.web-public-ip[count.index].address}.nip.io",file(var.web_ssh_public_key), count.index)
+  metadata_startup_script = format(local.init_script,var.ssh_username,"web.${google_compute_address.web-public-ip[count.index].address}.nip.io",file(var.web_ssh_public_key), count.index)
   hostname                = "web.${google_compute_address.web-public-ip[count.index].address}.nip.io"
 
   tags = [
@@ -138,7 +140,7 @@ resource "google_compute_instance" "ipa" {
   name                    = "${var.owner}-${var.name_prefix}-ipa"
   machine_type            = "e2-standard-2"
   zone                    = "${var.gcp_region}-${var.gcp_az}"
-  metadata_startup_script = format(local.init_script,"ipa.${google_compute_address.ipa-public-ip[count.index].address}.nip.io",file(var.ssh_public_key), count.index)
+  metadata_startup_script = format(local.init_script,var.ssh_username,"ipa.${google_compute_address.ipa-public-ip[count.index].address}.nip.io",file(var.ssh_public_key), count.index)
   hostname                = "ipa.${google_compute_address.ipa-public-ip[count.index].address}.nip.io"
 
   tags = [
@@ -187,7 +189,7 @@ resource "google_compute_instance" "ecs" {
   name                    = "${var.owner}-${var.name_prefix}-ecs-${count.index}"
   machine_type            = var.ecs_instance_type
   zone                    = "${var.gcp_region}-${var.gcp_az}"
-  metadata_startup_script = format(local.init_script,"ecs.${google_compute_address.ecs-public-ip[count.index].address}.nip.io",file(var.ssh_public_key), count.index)
+  metadata_startup_script = format(local.init_script,var.ssh_username,"ecs.${google_compute_address.ecs-public-ip[count.index].address}.nip.io",file(var.ssh_public_key), count.index)
   hostname                = "ecs.${google_compute_address.ecs-public-ip[count.index].address}.nip.io"
 
   tags = [
@@ -237,11 +239,11 @@ resource "google_compute_instance_group" "servers" {
   description = "${var.project}"
 
   instances = flatten([
-    [for id in (google_compute_instance.cluster.*.id): id],
-    [for id in (google_compute_instance.ecs.*.id): id],
-    [for id in (google_compute_instance.web.*.id): id],
-    [for id in (google_compute_instance.ipa.*.id): id],
-    [for id in (google_compute_instance.ocp.*.id): id],
+    [for id in (google_compute_instance.cluster.*.self_link): id],
+    [for id in (google_compute_instance.ecs.*.self_link): id],
+    [for id in (google_compute_instance.web.*.self_link): id],
+    [for id in (google_compute_instance.ipa.*.self_link): id],
+    [for id in (google_compute_instance.ocp.*.self_link): id],
   ])
 
   zone = "${var.gcp_region}-${var.gcp_az}"
@@ -253,7 +255,7 @@ resource "google_compute_instance" "ocp" {
   name                    = "${var.owner}-${var.name_prefix}-ocp-${count.index}"
   machine_type            = var.ocp_instance_type
   zone                    = "${var.gcp_region}-${var.gcp_az}"
-  metadata_startup_script = format(local.rocky_init_script,"ocp.${google_compute_address.ocp-public-ip[count.index].address}.nip.io",file(var.ssh_public_key), count.index)
+  metadata_startup_script = format(local.init_script,var.ocp_ssh_username,"ocp.${google_compute_address.ocp-public-ip[count.index].address}.nip.io",file(var.ssh_public_key), count.index)
   hostname                = "ocp.${google_compute_address.ocp-public-ip[count.index].address}.nip.io"
   
   advanced_machine_features {
@@ -296,29 +298,4 @@ resource "google_compute_address" "ocp-public-ip" {
   count        = (var.deploy_ocp ? var.cluster_count : 0)
   name         = "${var.owner}-${var.name_prefix}-ocp-public-ip-${count.index}"
   address_type = "EXTERNAL"
-}
-
-# rocky boot script on GCP
-locals {
-  rocky_init_script = <<-EOF
-  #!/bin/bash
-  # rocky-cloud image post-fix script
-  # - set hostname
-  # - add rocky user
-  # - allow root access
-  hostnamectl set-hostname %s --static
-  CONF="/etc/workshop.conf"
-  if [[ ! -f $CONF ]]; then
-    #initialization on first boot
-    useradd -G 4,39,1000 rocky
-    AUTH_KEYS='%s'
-    mkdir /home/rocky/.ssh
-    touch /home/rocky/.ssh/authorized_keys
-    chmod 0600 /home/rocky/.ssh/authorized_keys
-    chown -R rocky:rocky /home/rocky/.ssh
-    echo $AUTH_KEYS >> /home/rocky/.ssh/authorized_keys
-    sed -i.bak 's/PermitRootLogin *no/PermitRootLogin yes/' /etc/ssh/sshd_config
-    echo "export CLUSTER_ID=%s" >> $CONF
-  fi
-  EOF
 }
