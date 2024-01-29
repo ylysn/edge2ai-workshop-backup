@@ -1382,15 +1382,14 @@ function resolve_host_addresses() {
         export PUBLIC_DNS=${prefix}.${PUBLIC_IP}.nip.io
         ;;
     azure)
-        # Added to prevent DNS leak to nip.io
-        sed -i.bak -e "s/plugins = ifcfg-rh,/dns=none/g" /etc/NetworkManager/NetworkManager.conf 
-        sed -i.bak -e "s/$(hostname -d)//g" /etc/resolv.conf
-        systemctl restart NetworkManager
         systemctl enable chronyd
         systemctl restart chronyd
         export PRIVATE_DNS="$(cat /etc/hostname).$(grep search /etc/resolv.conf | awk '{print $2}')"
         export PRIVATE_IP=$(hostname -I | awk '{print $1}')
         export PUBLIC_DNS=${prefix}.${PUBLIC_IP}.nip.io
+        # Added to prevent DNS leak to nip.io
+        sed -i.bak -e "s/plugins = ifcfg-rh,/dns=none/g" /etc/NetworkManager/NetworkManager.conf 
+        systemctl restart NetworkManager
         ;;
     gcp)
         echo "server 169.254.169.254 prefer iburst minpoll 4 maxpoll 4" >> /etc/chrony.conf
@@ -1612,6 +1611,20 @@ function paywall_curl() {
   fi
   retry_if_needed 5 5 "curl $auth --silent '${url}' -L > '${output}'"
 }
+function upload_license(){
+  log_status "Upload license"
+  curl -s -u "admin:${THE_PWD}" \
+    -H "accept: application/json" -H 'Content-Type: multipart/form-data' \
+    "https://${CLUSTER_HOST}:7183/api/v40/cm/license" \
+    -F license=@${LICENSE_FILE_PATH}
+  
+  log_status "Add CDP-PVC parcel repo and paywall credentials to CM"
+  REPOS=$("${CURL[@]}" -X GET "https://${CLUSTER_HOST}:7183/api/v44/cm/config" | jq -r '.items[] | select(.name == "REMOTE_PARCEL_REPO_URLS").value')
+  REPOS="$(echo "$REPOS" | sed "s#${ECS_PARCEL_REPO}##g;s#,,#,#g;s/,$//"),${ECS_PARCEL_REPO}"
+  "${CURL[@]}" -X PUT "https://${CLUSTER_HOST}:7183/api/v44/cm/config" -d '{"items":[{"name":"REMOTE_PARCEL_REPO_URLS", "value":"'"$REPOS"'"}, {"name":"REMOTE_REPO_OVERRIDE_USER", "value":"'"$(get_remote_repo_username)"'"}, {"name":"REMOTE_REPO_OVERRIDE_PASSWORD", "value":"'"$(get_remote_repo_password)"'"}]}'
+  "${CURL[@]}" -X POST "https://${CLUSTER_HOST}:7183/api/v44/cm/commands/refreshParcelRepos"
+  sleep 10
+}
 
 function install_ecs() {
   log_status "Copy CM repo file to ECS host"
@@ -1628,19 +1641,6 @@ function install_ecs() {
   while [[ -z ${ECS_HOST_ID:-} ]]; do
     ECS_HOST_ID=$("${CURL[@]}" -X GET "https://${CLUSTER_HOST}:7183/api/v32/hosts" -H "accept: application/json" -H "Content-Type: application/json" | jq -r '.items[] | select(.hostname == "'"$ECS_PUBLIC_DNS"'").hostId')
   done
-
-  log_status "Upload license"
-  curl -s -u "admin:${THE_PWD}" \
-    -H "accept: application/json" -H 'Content-Type: multipart/form-data' \
-    "https://${CLUSTER_HOST}:7183/api/v40/cm/license" \
-    -F license=@${LICENSE_FILE_PATH}
-
-  log_status "Add CDP-PVC parcel repo and paywall credentials to CM"
-  REPOS=$("${CURL[@]}" -X GET "https://${CLUSTER_HOST}:7183/api/v44/cm/config" | jq -r '.items[] | select(.name == "REMOTE_PARCEL_REPO_URLS").value')
-  REPOS="$(echo "$REPOS" | sed "s#${ECS_PARCEL_REPO}##g;s#,,#,#g;s/,$//"),${ECS_PARCEL_REPO}"
-  "${CURL[@]}" -X PUT "https://${CLUSTER_HOST}:7183/api/v44/cm/config" -d '{"items":[{"name":"REMOTE_PARCEL_REPO_URLS", "value":"'"$REPOS"'"}, {"name":"REMOTE_REPO_OVERRIDE_USER", "value":"'"$(get_remote_repo_username)"'"}, {"name":"REMOTE_REPO_OVERRIDE_PASSWORD", "value":"'"$(get_remote_repo_password)"'"}]}'
-  "${CURL[@]}" -X POST "https://${CLUSTER_HOST}:7183/api/v44/cm/commands/refreshParcelRepos"
-  sleep 10
 
   log_status "Add ECS cluster"
   "${CURL[@]}" -X POST \
@@ -1794,20 +1794,6 @@ EOF
   scp -o StrictHostKeyChecking=no -i /home/${SSH_USER}/.ssh/${NAMESPACE}.pem ${SSH_USER}@${ECS_PRIVATE_IP}:/home/${SSH_USER}/host.pem ${SEC_BASE}/ecs/host.pem
   chown -R cloudera-scm:cloudera-scm ${SEC_BASE}/ecs
 
-  log_status "Patch gen_credentials_ipa.sh for IPA support to ECS"
-  # Preparing the script before provisioning ECS
-  local ipa_patch_file=/tmp/ipa_patch_file.$$
-  cat > $ipa_patch_file <<EOF
-  # ipa host-add patch for k8s
-  if [[ \$HOST =~ \. ]]; then
-    ipa host-add \$HOST  --force --no-reverse
-  else
-    ipa host-add \$HOST.svc.cluster.local  --force --no-reverse
-  fi
-EOF
-  local search_string='  ipa host-add $HOST --force --no-reverse'
-  sed -i.bak -e '/'"$search_string"'/r '"$ipa_patch_file"'' -e '/'"$search_string"'/d' /opt/cloudera/cm/bin/gen_credentials_ipa.sh
-
   "${CURL[@]}" -X POST \
     "https://${CLUSTER_HOST}:7183/api/v51/clusters/${ECS_CLUSTER_NAME}/services" \
     -d @$svc_json_file
@@ -1838,14 +1824,60 @@ EOF
     # ECS setup takes up to 15 minutes, sleep for 30 seconds
     sleep 30
   done
-  echo "ECS Post-Install configuration"
+  log_status "ECS Cluster is ready"
+}
 
-  log_status "Configure LDAP/PAM Groups on CDP-BASE"
+function install_ocp() {
+  CURL=(curl -s -u "admin:${THE_PWD}" -H "accept: application/json" -H "Content-Type: application/json")
+  log_status "Connect to OCP API"
+  KUBE_DOMAIN="${OCP_PUBLIC_DNS}"
+  API_OCP_ENDPOINT="api.${OCP_PUBLIC_DNS}"
+  oc_login $API_OCP_ENDPOINT
+  KUBE_CONFIG="$(sed ':a;N;$!ba;s/\n/\\n/g' ~/.kube/config)"
+
+  log_status "Initialize OCP"
+  local ocp_json_file=${BASE_DIR}/ocp_install.json
+  cat > $ocp_json_file <<EOF
+{
+  "kubernetesType": "openshift",
+  "remoteRepoUrl": "${ECS_REPO}",
+  "valuesYaml": "ContainerInfo:\n  Mode: public\nDatabase:\n  Mode: embedded\n  EmbeddedDbStorage: 20\nServices:\n  thunderheadenvironment:\n    Config:\n      database:\n        name: db-env\n  mlxcontrolplaneapp:\n    Config:\n      database:\n        name: db-mlx\n  dwx:\n    Config:\n      database:\n        name: db-dwx\n  cpxliftie:\n    Config:\n      database:\n        name: db-liftie\n  dex:\n    Config:\n      database:\n        name: db-dex\n  resourcepoolmanager:\n    Config:\n      database:\n        name: db-resourcepoolmanager\n  cdpcadence:\n    Config:\n      database:\n        name: db-cadence\n  cdpcadencevisibility:\n    Config:\n      database:\n        name: db-cadence-visibility\n  clusteraccessmanager:\n    Config:\n      database:\n        name: db-clusteraccessmanager\n  monitoringapp:\n    Config:\n      database:\n        name: db-alerts\n  thunderheadusermanagementprivate:\n    Config:\n      database:\n        name: db-ums\n  classicclusters:\n    Config:\n      database:\n        name: cm-registration\n  clusterproxy:\n    Config:\n      database:\n        name: cluster-proxy\n  dssapp:\n    Config:\n      database:\n        name: db-dss-app\nOptionalCerts:\n  MiscCaCerts: ''\nVault:\n  Mode: embedded\n  EmbeddedStorage: 2\nStorage:\n  StorageClass: ''",
+  "kubeConfig": "${KUBE_CONFIG}",
+  "namespace": "cdp",
+  "isOverrideAllowed": true
+}
+EOF
+
+  log_status "Start Control Plane installation"
+  local ocp_call_log=/tmp/ocp-call.$(date +%s).log
   "${CURL[@]}" -X POST \
-    "https://${CLUSTER_HOST}:7183/api/v30/externalUserMappings" \
-    -d '{"items":[{"name":"cdp-admins","type":"LDAP","authRoles":[{"name":"ROLE_ADMIN"}]},{"name":"cdp-users","type":"LDAP","authRoles":[{"name":"ROLE_CLUSTER_ADMIN"}]}]}'
+    -H "Referer: https://${CLUSTER_HOST}:7183/cmf/express-wizard/wizard?allowResume=false&clusterType=EXPERIENCE_CLUSTER" \
+    "https://${CLUSTER_HOST}:7183/api/v44/controlPlanes/commands/installControlPlane" \
+    -d @$ocp_json_file | tee $ocp_call_log
+  local job_id=$(jq '.id' $ocp_call_log)
 
-  local ECS_BASE_URL="https://console-cdp.apps.$ECS_PUBLIC_DNS"
+  while true; do
+    [[ $(curl -s -k -L -u admin:"${THE_PWD}" "$(get_cm_base_url)/api/v19/commands/$job_id" | jq -r '.active') == "false" ]] && break
+    echo "Waiting for OCP setup to finish"
+    # ECS setup takes up to 15 minutes, sleep for 30 seconds
+    sleep 30
+  done
+
+  log_status "OCP Cluster is ready"
+}
+
+function install_cml() {
+  
+  local ENDPOINT_HOST="${1}"
+  local IS_EMBEDDED=${2:-1}
+  local ENABLE_MLREG=${3:-1}
+  local KUBE_CONFIG="${4:-}"
+  local KUBE_DOMAIN="${5:-}"
+
+
+  log_status "Install CML on $ENDPOINT_HOST"
+
+  local ECS_BASE_URL="https://console-cdp.apps.$ENDPOINT_HOST"
   local ROOT_CA=/opt/cloudera/security/x509/truststore.pem
   local COOKIE_FILE=${BASE_DIR}/cookie.txt.$$
   local LDAP_JSON=${BASE_DIR}/ldap.json.$$
@@ -1912,11 +1944,12 @@ EOF
     return 1
   fi
 
-  log_status "Rebuild default environment on ECS-CP"
-  # Remove ecs environemnt created by express wizard
-  curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"envNameOrCrn": "ecs"}' $ECS_BASE_URL/api/v1/compute/deregisterClusters >/dev/null 2>&1
-  curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"environmentName": "ecs","cascading": true}' $ECS_BASE_URL/api/v1/environments2/deleteEnvironment >/dev/null 2>&1
-
+  if [[ $IS_EMBEDDED -eq 1 ]]; then
+    log_status "Rebuild default environment on ECS-CP"
+    # Remove ecs environemnt created by express wizard
+    curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"envNameOrCrn": "ecs"}' $ECS_BASE_URL/api/v1/compute/deregisterClusters >/dev/null 2>&1
+    curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"environmentName": "ecs","cascading": true}' $ECS_BASE_URL/api/v1/environments2/deleteEnvironment >/dev/null 2>&1
+  fi
   # Build request JSON
   cat > $ECS_ENV_JSON <<EOF
 {
@@ -1927,9 +1960,10 @@ EOF
     "clusterNames": [
         "OneNodeCluster"
     ],
-    "kubeConfig": "",
+    "kubeConfig": "$KUBE_CONFIG",
     "authenticationTokenType": "CLEARTEXT_PASSWORD",
     "namespacePrefix": "cdp",
+    "domain": "$KUBE_DOMAIN",
     "dockerConfigJson": "",
     "description": ""
 }
@@ -1941,6 +1975,19 @@ EOF
     echo "Waiting for environment to be ready.."
     sleep 10
   done
+  ECS_ENV_CRN=$(curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"environmentName": "default"}' $ECS_BASE_URL/api/v1/environments2/describeEnvironment 2>/dev/null| jq -r '.environment.crn')
+
+  NFS_EXT_DIR=""
+  NFS_VER=""
+  NFS_DISK_SIZE="100"
+
+  if [[ $IS_EMBEDDED -eq 0 ]]; then
+    # ENABLE_NFS @TODO: $IS_EMBEDDED=false AND $IS_NFS=true
+    log_status "Prepare NFS for CML"
+    NFS_EXT_DIR="${ENDPOINT_HOST}:/nfs/workshop"
+    NFS_VER="4.1"
+    NFS_DISK_SIZE=""
+  fi
 
   log_status "Provision CML Workspace"
   # Build request JSON
@@ -1955,8 +2002,10 @@ EOF
     "existingDatabaseConfig": {},
     "mlGovernancePrincipal": "workshop",
     "staticSubdomain": "edge2ai",
+    "existingNFS": "$NFS_EXT_DIR",
+    "nfsVersion": "$NFS_VER",
     "namespace": "edge2ai",
-    "nfsDiskSize": "100",
+    "nfsDiskSize": "$NFS_DISK_SIZE",
     "performCdswMigration": false
 }
 EOF
@@ -1971,13 +2020,105 @@ EOF
   done
 
   # Get CML URL
-  local CML_BASE_URL=$(curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{}' $ECS_BASE_URL/api/v1/ml/listWorkspaces 2>/dev/null | jq -r '.workspaces[] | .instanceUrl')
+  CML_BASE_URL=$(curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{}' $ECS_BASE_URL/api/v1/ml/listWorkspaces 2>/dev/null | jq -r '.workspaces[] | .instanceUrl')
   log_status "CML Workspace URL ${CML_BASE_URL}"
 
-  # Clean up
-  rm -f $COOKIE_FILE $LDAP_JSON $VALIDATE_JSON $ECS_ENV_JSON $ECS_CML_JSON || true
+  if [[ $ENABLE_MLREG -eq 1 ]]; then
+    log_status "Setting up Model Registry"
+    # create_ozone_bucket
+    kinit -kt $KEYTABS_DIR/workshop.keytab workshop
+    ozone fs -mkdir -p ofs://ozone/edge2ai/modelregistry
+    ozone sh bucket link /edge2ai/modelregistry /s3v/modelregistry
 
-  log_status "ECS Cluster is ready"
+    # get_s3_access
+    get_s3_access=( $(ozone s3 getsecret --om-service-id=ozone) )
+    S3_ACCESS_KEY="${get_s3_access[0]#*=}"
+    S3_SECRET_KEY="${get_s3_access[1]#*=}"
+    OZONE_BUCKET_NAME="modelregistry"
+    
+    cat > $ECS_CML_JSON <<EOF
+{
+    "environmentName": "default",
+    "s3AccessKey": "$S3_ACCESS_KEY",
+    "s3SecretKey": "$S3_SECRET_KEY",
+    "s3Bucket": "$OZONE_BUCKET_NAME",
+    "s3Endpoint": "https://$CLUSTER_HOST:9879",
+    "environmentCrn": "$ECS_ENV_CRN"
+}
+EOF
+    # Call createModelRegistry 
+    curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d @$ECS_CML_JSON $ECS_BASE_URL/api/v1/ml/createModelRegistry 2>/dev/null
+    local tries=99
+    while [[ $tries -ne 0 ]]; do
+      echo "Waiting for Model Registry to be ready.."
+      [[ $(curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{}' $ECS_BASE_URL/api/v1/ml/listModelRegistries 2>/dev/null | jq -r '.modelRegistries[] | .status') == "INSTALLED" ]] && break
+      ((tries--))
+      sleep 10
+    done
+    # Get Workspace CRN
+    WORKSPACE_CRN=$(curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{}' $ECS_BASE_URL/api/v1/ml/listWorkspaces 2>/dev/null | jq -r '.workspaces[] | .crn')
+    # Refresh Edge2AI workspace
+    curl -k -X POST -b $COOKIE_FILE -H "Content-Type: application/json" -d '{"workspaceCrn": "'"$WORKSPACE_CRN"'"}' $ECS_BASE_URL/api/v1/ml/refreshModelRegistryConfigmap 2>/dev/null
+  fi
+  log_status "CML Workspace provisioned successfully"
+}
+
+function map_ipa_users() {
+  log_status "Configure LDAP/PAM Groups on CDP-BASE"
+  "${CURL[@]}" -X POST \
+    "https://${CLUSTER_HOST}:7183/api/v30/externalUserMappings" \
+    -d '{"items":[{"name":"cdp-admins","type":"LDAP","authRoles":[{"name":"ROLE_ADMIN"}]},{"name":"cdp-users","type":"LDAP","authRoles":[{"name":"ROLE_CLUSTER_ADMIN"}]}]}'
+
+  log_status "Patch gen_credentials_ipa.sh for IPA support to ECS"
+  # Preparing the script before provisioning ECS
+  local ipa_patch_file=/tmp/ipa_patch_file.$$
+  cat > $ipa_patch_file <<EOF
+  # ipa host-add patch for k8s
+  if [[ \$HOST =~ \. ]]; then
+    ipa host-add \$HOST  --force --no-reverse
+  else
+    ipa host-add \$HOST.svc.cluster.local  --force --no-reverse
+  fi
+EOF
+  local search_string='  ipa host-add $HOST --force --no-reverse'
+  sed -i.bak -e '/'"$search_string"'/r '"$ipa_patch_file"'' -e '/'"$search_string"'/d' /opt/cloudera/cm/bin/gen_credentials_ipa.sh
+}
+function enable_nfs() {
+  yum_install nfs-utils
+  mkdir /nfs/workshop -p
+  chown 8536:8536 /nfs/workshop
+  chmod g+srwx /nfs/workshop
+  echo "/nfs/workshop  *(rw,sync,no_root_squash,no_all_squash,no_subtree_check)" | tee -a /etc/exports
+  systemctl enable nfs-server
+  systemctl start nfs-server
+  if firewall-cmd --state >/dev/null 2>&1; then
+    firewall-cmd --permanent --add-service=nfs
+    firewall-cmd --permanent --add-service=mountd
+    firewall-cmd --permanent --add-service=rpc-bind
+    firewall-cmd --reload
+    echo "firewall-cmd is running"
+  else
+    echo "SKIPPED: firewall-cmd is not running or not installed"
+  fi
+}
+
+function oc_login() {
+  local api_url="${1}"
+  wget https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-client-linux.tar.gz -O /tmp/openshift-client-linux.tar.gz
+  tar xvf /tmp/openshift-client-linux.tar.gz -C /usr/local/bin
+  local retries=100
+  while [[ $retries -gt 0 ]]; do
+    set +e
+    /usr/local/bin/oc login -u kubeadmin -p $THE_PWD -s $api_url
+    err=$?
+    set -e
+    if [[ $err == 0 ]]; then
+      break
+    fi
+    retries=$((retries - 1))
+    sleep 10
+    echo "Waiting for OpenShift cluster on $api_url to be ready (retries left: $retries)"
+  done
 }
 
 function wait_for_parcel_state() {

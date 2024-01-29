@@ -113,6 +113,9 @@ elif [[ $ACTION == "install-cloudera-agent" ]]; then
   systemctl enable cloudera-scm-agent
   systemctl start cloudera-scm-agent
 
+  log_status "ECS: Enable NFS for CML"
+  enable_nfs
+
   nohup bash $0 configure-coredns > ${BASE_DIR}/configure-coredns.log 2>&1 &
 
   nohup bash $0 configure-cml > ${BASE_DIR}/configure-cml.log 2>&1 &
