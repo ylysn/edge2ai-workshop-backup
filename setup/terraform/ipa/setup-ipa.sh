@@ -102,7 +102,7 @@ log_status "Setting host and domain names"
 export PRIVATE_IP=$(hostname -I | awk '{print $1}')
 export LOCAL_HOSTNAME=$(hostname -f)
 export PUBLIC_IP=$(curl -sL http://ifconfig.me || curl -sL http://api.ipify.org/ || curl -sL https://ipinfo.io/ip)
-export PUBLIC_DNS=ipa.${PUBLIC_IP}.nip.io
+  export PUBLIC_DNS=ipa.${PUBLIC_IP}.nip.io
 
 sed -i.bak "/${LOCAL_HOSTNAME}/d;/^${PRIVATE_IP}/d;/^::1/d" /etc/hosts
 echo "$PRIVATE_IP $PUBLIC_DNS $LOCAL_HOSTNAME" >> /etc/hosts
@@ -127,7 +127,8 @@ sed -i 's/metalink=/#metalink=/;s/#*baseurl=/baseurl=/' /etc/yum.repos.d/epel*.r
 yum_install cowsay figlet ipa-server rng-tools
 yum -y upgrade nss-tools
 systemctl restart dbus
-ipa-server-install --hostname=$(hostname -f) -r $REALM_NAME -n $(hostname -d) -a "$IPA_ADMIN_PASSWORD" -p "$DIRECTORY_MANAGER_PASSWORD" -U
+#ipa-server-install --hostname=$(hostname -f) -r $REALM_NAME -n $(hostname -d) -a "$IPA_ADMIN_PASSWORD" -p "$DIRECTORY_MANAGER_PASSWORD" -U
+ipa-server-install --hostname=$(hostname -f) --ca-subject "CN=$(hostname -f)" -r $REALM_NAME -n $(hostname -d) -a "$IPA_ADMIN_PASSWORD" -p "$DIRECTORY_MANAGER_PASSWORD" -U
 
 # authenticate as admin
 echo "${IPA_ADMIN_PASSWORD}" | kinit admin >/dev/null
