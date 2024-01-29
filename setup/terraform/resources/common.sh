@@ -1617,7 +1617,7 @@ function upload_license(){
     -H "accept: application/json" -H 'Content-Type: multipart/form-data' \
     "https://${CLUSTER_HOST}:7183/api/v40/cm/license" \
     -F license=@${LICENSE_FILE_PATH}
-  
+  CURL=(curl -s -u "admin:${THE_PWD}" -H "accept: application/json" -H "Content-Type: application/json")
   log_status "Add CDP-PVC parcel repo and paywall credentials to CM"
   REPOS=$("${CURL[@]}" -X GET "https://${CLUSTER_HOST}:7183/api/v44/cm/config" | jq -r '.items[] | select(.name == "REMOTE_PARCEL_REPO_URLS").value')
   REPOS="$(echo "$REPOS" | sed "s#${ECS_PARCEL_REPO}##g;s#,,#,#g;s/,$//"),${ECS_PARCEL_REPO}"
